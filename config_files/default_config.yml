@@ -1,0 +1,385 @@
+# =============================================================================
+# MeerKAT+ Data Reduction Pipeline — Reference Configuration
+# =============================================================================
+# This file documents every available parameter for each pipeline worker.
+# Workers are enabled or disabled independently via their 'enable' flag.
+#
+# WORKER NAMING CONVENTION
+# Workers whose names contain a double-underscore suffix (e.g. __bpcal)
+# can be duplicated with a different suffix to process multiple targets.
+# For example:
+#   mstransform__bpcal   → splits the bandpass calibrator
+#   mstransform__target  → splits the science target
+# The suffix is arbitrary; it is only used to label the output products.
+#
+# MANDATORY WORKERS: general, getdata
+# OPTIONAL  WORKERS: listobs, mstransform, flagdata, wsclean, crosscal
+# =============================================================================
+
+
+# =============================================================================
+# GENERAL (mandatory)
+# Global settings shared by all workers.
+# =============================================================================
+general:
+  # Absolute path to the directory containing the raw measurement set(s)
+  msdir: ''
+  # Absolute path to the root output directory where all pipeline products
+  # (measurement sets, calibration tables, images, plots) will be written
+  outdir: ''
+  use_container:
+    # Enable the use of containers if working on an HTCondor cluster
+    enable: false
+      # Absolute path to the directory containing the Singularity container images
+      # Singularity container image filenames, looked up inside contdir
+      contdir: ''
+      containers:
+        # CASA container (used by listobs, mstransform, flagdata, crosscal, wsclean)
+        casa: ''
+        # shadems container (used by the inspect worker)
+        shadems: ''
+      # Optional string prepended to every output filename.
+      # When left empty the MS name from getdata (without extension) is used.
+  prefix: 'pipeline'
+
+# =============================================================================
+# GETDATA (mandatory)
+# Identifies the raw measurement set to process.
+# =============================================================================
+getdata:
+  # Name of the input measurement set, without the .ms extension.
+  # The file is expected at <msdir>/<ms>.ms
+  ms: ''
+
+# =============================================================================
+# CROSSCAL
+# First-generation cross-calibration (1GC) of the bandpass/flux calibrator.
+# Solves for instrumental delays (K), complex gains (G), and the bandpass
+# response (B) in a user-defined sequence using CASA gaincal and bandpass.
+# Each solution step is parameterised independently via parallel lists
+# (calmode, solint, combine) whose length must equal the number of
+# characters in 'order'.
+#
+# Multiple instances can coexist with different suffixes.
+#
+# Input:  <datadir>/<prefix>_<label_in>.ms
+# Output: <datadir>/caltables/<prefix>_<label_out>.*  (one calibration table per step)
+# =============================================================================
+crosscal:
+  enable: false
+  # Label of the input MS. Must match the label_out of an earlier flagdata
+  # or mstransform worker.
+  label_in: ''
+  # Label used to name the output calibration tables.
+  label_out: '1gc1'
+  # Reference antenna name (e.g. 'm000') or integer index.
+  # Choose a stable, well-connected antenna near the array centre
+  # with minimal flags throughout the observation.
+  refant: 'm000'
+  # Observing band. Used internally to apply band-appropriate priors
+  # and frequency ranges. Options: 'L', 'S'
+  band: 'L'
+  # Calibration settings for the primary (bandpass / flux) calibrator field
+  primary:
+    # Source name exactly as printed by listobs
+    name: 'J0408-6545'
+    # Calibration sequence, given as a string of single-letter step codes:
+    #   K → delay calibration   (CASA gaincal, gaintype='K')
+    #   G → gain calibration    (CASA gaincal, gaintype='G')
+    #   B → bandpass calibration(CASA bandpass)
+    # Steps are executed left to right, each using all previously derived
+    # tables as prior corrections.
+    # A single pass 'KGB' is the minimal standard sequence.
+    # A double pass 'KGBKGB' refines solutions by iterating over the
+    # full sequence a second time once a first-pass bandpass is available.
+    order: 'KGB'
+    # For each step in 'order': whether to solve for phase ('p'),
+    # amplitude ('a'), or both ('ap').
+    # Only meaningful for G steps; set to '' for K and B steps.
+    # Must contain exactly as many entries as characters in 'order'.
+    calmode:
+      - 'a'   # K  — delay, solve for amplitude
+      - 'ap'  # G  — gain, solve for amplitude and phase
+      - 'ap'  # B  — bandpass, solve for amplitude and phase
+    # For each step in 'order': the solution interval.
+    # 'inf' produces a single solution per scan (or per 'combine' unit below).
+    # Explicit durations must include units, e.g. '60s', '2min'.
+    # Must contain exactly as many entries as characters in 'order'.
+    solint:
+      - '120s'  # K
+      - '120s'  # G
+      - 'inf'  # B
+    # For each step in 'order': the data axes combined before solving.
+    # ''       → no combination; solutions break at obs/scan/field/spw boundaries
+    # 'scan'   → data from all scans are combined into a single solution
+    # 'spw'    → data from all spws are combined
+    # 'obs'    → data from all observations are combined
+    # Multiple axes can be combined using a comma-separated string, e.g. 'obs,scan'.
+    # Must contain exactly as many entries as characters in 'order'.
+    combine:
+      - ''      # K — one delay solution per scan
+      - ''      # G — one gain solution per scan
+      - 'scan'  # B — combine all scans for a robust bandpass solution
+    # Number of flagged channels over which to interpolate in the bandpass
+    # table. Set to 0 to disable gap-filling.
+    fillgaps: 70
+    # Number of channels in the running-mean window used to smooth the
+    # bandpass amplitude and phase solutions. Set to 1 to disable smoothing.
+    # Larger values suppress noise in sparse-S/N bandpass solutions.
+    smooth_window: 1
+    # Generate diagnostic plots of all gain tables after calibration
+    plotgains: true
+
+# =============================================================================
+# FLAGDATA
+# Applies a sequence of flagging operations to a measurement set:
+#   1. Manual flags   — autocorrelations, specific antennas, scans, spws,
+#                       and time ranges
+#   2. Shadow flags   — antennas physically blocked by another dish
+#   3. Clip flags     — visibilities with exactly zero amplitude
+#   4. RFI flags      — automated detection via the CASA tfcrop algorithm
+# A named flag backup ('preliminary') is saved at the end so the pipeline
+# can verify completion on restart.
+#
+# Multiple instances can coexists.
+#
+# Input: <datadir>/<prefix>_<label_in>.ms
+# =============================================================================
+flagdata:
+  enable: false
+  # Label of the input MS. Must match the label_out of an earlier mstransform
+  # or another flagdata worker.
+  label_in: ''
+  # Antenna-based manual flagging. Accepts standard CASA antenna syntax,
+  # e.g. 'm010', 'm010,m045'. Leave empty to skip.
+  flag_antenna: ''
+  # Flag autocorrelations (each antenna correlated with itself).
+  # Almost always kept true; autocorrelations are not used in imaging.
+  flag_autocorr: true
+  # Flag visibilities whose amplitude is exactly zero.
+  # These arise from correlator dropouts and must be removed before calibration.
+  flag_clip: true
+  # Automated RFI detection using the CASA tfcrop algorithm,
+  # which flags outliers in the time-frequency plane.
+  flag_rfi: true
+  # Flag data from antennas that are geometrically shadowed by another antenna.
+  flag_shadow: true
+  # Scan-based manual flagging. Comma-separated scan IDs or ranges,
+  # e.g. '1,3,5~8'. Leave empty to skip.
+  flag_scan: ''
+  # Channel/spw-based manual flagging in CASA spw syntax,
+  # e.g. '0:0~50;3800~3900' to flag edge channels. Leave empty to skip.
+  flag_spw: ''
+  # Time-range manual flagging in CASA timerange syntax,
+  # e.g. '2024/01/01/00:00:00~2024/01/01/00:10:00'. Leave empty to skip.
+  flag_time: ''
+  # Diagnostic plots generated by shadems after all flagging is complete
+  
+# =============================================================================
+# INSPECT
+# Generates shadems diagnostic plots of the visibilities in a measurement set.
+# Useful for visual quality assessment at any stage of the pipeline,
+# e.g. before and after flagging or calibration.
+#
+# Multiple instances can coexist with different suffixes (e.g. inspect__bpcal,
+# inspect__target).
+#
+# Input:  <datadir>/<prefix>_<label_in>.ms
+# Output: <plotdir>/<dirname>/  (one PNG per plot command)
+# =============================================================================
+inspect:
+  enable: false
+  # Label of the input MS. Must match the label_out of an earlier mstransform,
+  # flagdata, or crosscal worker.
+  label_in: ''
+  # Label appended to output filenames produced by shadems.
+  label_out: ''
+  # Subdirectory under the plots directory where the PNGs are written.
+  # Leave empty to write directly into the root plots directory.
+  dirname: ''
+  # Data column to pass to shadems via --col.
+  # Options: 'DATA', 'CORRECTED_DATA', 'MODEL_DATA'
+  col: 'DATA'
+  # List of shadems plot commands. Each entry is passed verbatim to shadems
+  # alongside the MS path and --col / --dir flags set above.
+  # -x sets the x-axis quantity, -y the y-axis quantity,
+  # --corr selects the correlation (XX, YY, XY, YX).
+  plots:
+    - -x TIME -y amp   --corr XX
+    - -x TIME -y amp   --corr YY
+    - -x TIME -y phase --corr XX
+    - -x TIME -y phase --corr YY
+    - -x FREQ -y amp   --corr XX
+    - -x FREQ -y amp   --corr YY
+    - -x FREQ -y phase --corr XX
+    - -x FREQ -y phase --corr YY
+    - -x real  -y imag --corr XX
+    - -x real  -y imag --corr YY
+
+# =============================================================================
+# LISTOBS
+# Runs CASA listobs and writes a human-readable summary of the observation
+# (fields, scans, frequencies, antennas, exposure times) to a text file.
+#
+# Output: <outdir>/<prefix>_<label_out>_obsinfo.txt
+#         (or <outdir>/<prefix>_obsinfo.txt when label_out is empty)
+# =============================================================================
+listobs:
+  enable: false
+  # Optional label appended to the output filename.
+  # Leave empty to produce <prefix>_obsinfo.txt.
+  label_out: ''
+
+# =============================================================================
+# MSTRANSFORM
+# Splits a single field from the raw MS into a new MS, optionally selecting
+# on spectral window, channels, correlations, antennas, and scans, and
+# optionally averaging in frequency and/or time.
+# An on-the-fly calibration step (applycal) can also be applied during the
+# split by supplying a CASA calibration library file.
+#
+# Multiple instances of this worker can coexist in the config.
+#
+# Input:  <datadir>/<prefix>_<label_in>.ms  (raw MS when label_in is empty)
+# Output: <datadir>/<prefix>_<label_out>.ms (field name used when label_out is empty)
+# =============================================================================
+mstransform:
+  enable: false
+  # Label of the input MS. When empty the raw MS from getdata is used directly.
+  label_in: ''
+  # Label of the output MS. When empty the field name is appended automatically.
+  label_out: 'corr'
+  # Data column to read from the input MS.
+  # Options: 'data', 'corrected', 'model'
+  col: 'data'
+  # Field to extract. Accepts either the integer field ID (as a string)
+  # or the field name exactly as printed by listobs.
+  field: '0'
+  # Spectral window and channel selection in standard CASA spw syntax.
+  # Examples:
+  #   '0'          → all channels of spw 0
+  #   '0:128~3840' → channels 128 to 3840 of spw 0
+  #   '*:128~3840' → same channel range across all spws
+  # Leave empty to select all channels of all spws.
+  spw: ''
+  # Correlations to keep. E.g. 'XX,YY' for pseudo-Stokes I, or
+  # 'XX,XY,YX,YY' for full polarisation. Leave empty to keep all.
+  correlation: ''
+  # Scan selection. Comma-separated list or range, e.g. '1,3,5~8'.
+  # Leave empty to select all scans.
+  scan: ''
+  # Antenna selection in standard CASA antenna syntax,
+  # Leave empty to select all antennas.
+  antenna: ''
+  # Channel averaging: average adjacent channels before writing the output MS
+  chanavg:
+    # Set to true to enable channel averaging
+    enable: false
+    # Number of input channels to average into one output channel
+    chanbin: 1
+  # Time averaging: average adjacent time integrations before writing
+  timeavg:
+    # Set to true to enable time averaging
+    enable: false
+    # Duration of the averaging window. Must include time units,
+    # e.g. '8s', '30s', '1min'. Cannot be shorter than the native
+    # integration time.
+    timebin: '1s'
+  # On-the-fly calibration: run applycal during the split so that the output
+  # MS already contains corrected visibilities in CORRECTED_DATA
+  otfcal:
+    # Set to true to enable on-the-fly calibration
+    enable: false
+    # Label of the calibration tables to be used.
+    # Tables are expected to be in /data/caltable/<prefix>_<label_cal>_*.cal
+    label_cal: '1gc1'
+
+# =============================================================================
+# WSCLEAN
+# Images a measurement set with WSClean using multi-scale, multi-frequency
+# CLEAN. An optional sub-worker can auto-estimate the cell size and image
+# size from the array geometry and observing frequency, overriding the
+# values set manually below.
+#
+# Multiple instances can coexist.
+#
+# Input:  <datadir>/<prefix>_<label_in>.ms
+# Output: <outdir>/<prefix>_<label_in>-*.fits
+#         (or <outdir>/<dirname>/<prefix>_<label_in>-*.fits when dirname is empty)
+# =============================================================================
+wsclean:
+  enable: false
+  # Label of the input MS to image. Must match the label_out of an earlier
+  # mstransform or flagdata worker.
+  label_in: ''
+  # Label of the output directory.
+  dirname: ''
+  # Automatic estimation of cell size and image size.
+  # When enabled, npix and cell below are overridden by values derived
+  # from the maximum baseline and the central observing frequency.
+  estimate_params:
+    # Set to true to run the automatic parameter estimation script
+    enable: false
+    # Rest frequency in GHz used to evaluate the synthesized beam and
+    # primary beam. Required for spectral-line observations; for
+    # continuum observations the mean channel frequency is used instead.
+    restfreq: 1.420405752
+  # Number of pixels along each side of the square output image.
+  # For FFT efficiency choose a value whose only prime factors are 2, 3, 5, 7
+  # (e.g. 1024, 2048, 3072, 4096, 6400, 7200).
+  # Overridden by estimate_params when that sub-worker is enabled.
+  npix: 2048
+  # Image pixel scale in arcseconds per pixel.
+  # A good rule of thumb is ~1/3 of the expected synthesized beam FWHM,
+  # giving roughly 3 pixels across the beam.
+  # Overridden by estimate_params when that sub-worker is enabled.
+  cell: 1.0
+  # Zero-padding factor applied to the image plane during the FFT.
+  # Values between 1.2 and 1.5 suppress aliasing near the image edges.
+  # 1.3 is a widely used compromise.
+  padding: 1.3
+  # Visibility weighting scheme.
+  # Options:
+  #   'briggs'   → trade-off between resolution and sensitivity,
+  #                controlled by the 'robust' parameter below
+  #   'uniform'  → maximum resolution, higher noise
+  #   'natural'  → maximum sensitivity, lower resolution
+  weight: 'briggs'
+  # Briggs robust parameter. Only used when weight is 'briggs'.
+  # Range: -2 (approaches uniform weighting) to +2 (approaches natural).
+  # 0.0 is a balanced choice for most science cases.
+  robust: 0.0
+  # Gaussian uv-taper full-width at half-maximum in arcseconds.
+  # Applies an additional downweighting of long baselines in the uv plane,
+  # effectively increasing the synthesized beam and sensitivity to extended
+  # emission. Set to 0 to disable tapering.
+  taper: 0.0
+  # Minor-cycle gain: fraction of the peak residual subtracted per minor
+  # iteration. The standard value of 0.1 provides stable convergence.
+  gain: 0.1
+  # Major-cycle gain: fraction of the peak residual cleaned across the full
+  # image before re-computing the PSF. Values close to 1 may cause
+  # instabilities; 0.8–0.9 is the typical range.
+  mgain: 0.9
+  # Auto-masking threshold in units of the local noise estimate.
+  # During the first major cycle, only peaks above this level are cleaned.
+  # Higher values produce more conservative masks. Typical range: 3–5.
+  auto_mask: 10.0
+  # Auto-threshold in units of the local noise estimate.
+  # Cleaning halts when the residual peak falls below this level.
+  # Typical range: 0.3–1.0.
+  auto_thr: 0.5
+  # Upper limit on the total number of clean components across all cycles.
+  # With auto-thresholding active, cleaning usually terminates well before
+  # this limit is reached.
+  niter: 1000000
+  # Maximum number of major cycles. Set to 0 for no limit.
+  nmiter: 0
+  # Number of output sub-band image cubes produced by WSClean.
+  # Set to 1 for a single wideband continuum image.
+  # When > 1, each sub-band image is also combined into an MFS map
+  # if joinchans is true.
+  nchans: 1
+  # Join all sub-band images during minor cycles to produce an MFS dirty
+  # image and restoring beam. Recommended when nchans > 1.
+  joinchans: false

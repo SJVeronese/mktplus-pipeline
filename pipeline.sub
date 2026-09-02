@@ -1,0 +1,15 @@
+universe        = vanilla
+executable      = /scripts/pipeline.sh
+arguments       = /pipeline_config.yml
+
+log             = /condor_logs/pipeline_$(Cluster)_$(Process).log
+output          = /condor_logs/pipeline_$(Cluster)_$(Process).out
+error           = /condor_logs/pipeline_$(Cluster)_$(Process).err
+
+request_cpus    = 16
+request_memory  = 128GB
+request_disk    = 150GB
+
+getenv          = True
+
+queue 1

@@ -1,0 +1,383 @@
+#!/usr/bin/env python3
+"""
+crosscal.py – Generic order-driven cross-calibration for MeerKAT+ (CASA/casatasks).
+
+The calibration order is set by --order (e.g. 'KGBKGB').  For each step:
+  - K  → delay calibration    (casatasks.gaincal, gaintype='K')
+  - G  → gain calibration     (casatasks.gaincal, gaintype='G')
+  - B  → bandpass calibration (casatasks.bandpass)
+
+Gaintable accumulation rule:
+  For each step the gaintable contains the most recent solution of every
+  *other* type, ordered K → G → B.  After each B solution the active set
+  is reset to {B only}, because B subsumes the preceding K and G corrections.
+"""
+
+import argparse
+import casatasks
+import casatools
+import numpy as np
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
+import os
+
+# matplotlib style
+plt.rc('font', size=14)
+plt.rcParams['mathtext.default']      = 'regular'
+plt.rcParams['xtick.direction']       = 'in'
+plt.rcParams['xtick.major.size']      = 10
+plt.rcParams['xtick.major.width']     = 1
+plt.rcParams['xtick.minor.size']      = 5
+plt.rcParams['xtick.minor.width']     = 1
+plt.rcParams['xtick.top']             = True
+plt.rcParams['ytick.direction']       = 'in'
+plt.rcParams['ytick.major.size']      = 10
+plt.rcParams['ytick.major.width']     = 1
+plt.rcParams['ytick.minor.size']      = 5
+plt.rcParams['ytick.minor.width']     = 1
+plt.rcParams['ytick.right']           = True
+plt.rcParams['axes.formatter.use_mathtext'] = True
+
+# casa logging
+casalog = casatools.logsink()
+casalog.showconsole(True)   # echo CASA log to stdout
+
+# argument parsing
+parser = argparse.ArgumentParser(description="Order-driven cross-calibration worker.")
+parser.add_argument("--ms",            default="")
+parser.add_argument("--outname",       default="pipeline_1gc1")
+parser.add_argument("--outdir",        default=os.getcwd())
+parser.add_argument("--plotdir",       default=os.getcwd())
+parser.add_argument("--refant",        default="m000")
+parser.add_argument("--band",          default="L")
+parser.add_argument("--calibrator",    default="J0408-6545")
+parser.add_argument("--fillgaps",      default=0,     type=int)
+parser.add_argument("--smooth-window", default=3,     type=int)
+parser.add_argument("--plotgains",     default=False, type=lambda v: v.lower() == 'true')
+parser.add_argument("--order",         default="KGB")
+# one --calmode/--solint/--combine flag per step, repeated in order
+parser.add_argument("--calmode",  action="append", default=[])
+parser.add_argument("--solint",   action="append", default=[])
+parser.add_argument("--combine",  action="append", default=[])
+
+args = parser.parse_args()
+
+ms            = args.ms
+outname       = args.outname
+outdir        = args.outdir
+plotdir       = args.plotdir
+refant        = args.refant
+band          = args.band
+calibrator    = args.calibrator
+fillgaps      = args.fillgaps
+smooth_window = args.smooth_window
+plotgains     = args.plotgains
+
+# ensure output directories exist
+os.makedirs(outdir,  exist_ok=True)
+os.makedirs(plotdir, exist_ok=True)
+
+# resolve per-step parameters
+steps = list(args.order.upper())
+n     = len(steps)
+
+# pad user-supplied lists with '' so they match the number of steps;
+# truncate if the user supplied too many
+calmode_in = (args.calmode + [''] * n)[:n]
+solint_in  = (args.solint  + [''] * n)[:n]
+combine_in = (args.combine + [''] * n)[:n]
+
+# apply per-step defaults for any entry that is empty / not supplied:
+#   calmode : 'a'    for K,  'ap'   for G and B
+#   solint  : '120s' for K/G, 'inf' for B
+#   combine : 'scan' for K/B, ''    for G
+calmode_list = [v if v != '' else ('ap' if s in ('G', 'B') else 'a')   for s, v in zip(steps, calmode_in)]
+solint_list  = [v if v != '' else ('inf' if s == 'B' else '120s')       for s, v in zip(steps, solint_in)]
+combine_list = [v if v != '' else ('scan' if s in ('K', 'B') else '')   for s, v in zip(steps, combine_in)]
+
+print(f'Calibration order : {" -> ".join(steps)}')
+for i, (s, cm, si, co) in enumerate(zip(steps, calmode_list, solint_list, combine_list)):
+    print(f'step {i+1:2d}  {s}  calmode={cm!r:4s}  solint={si!r:6s}  combine={co!r}')
+
+# antenna names (used in plots)
+_tb = casatools.table()
+_tb.open(ms + '/ANTENNA')
+ant_names = list(_tb.getcol('NAME'))
+_tb.close()
+n_ant = len(ant_names)
+
+CORR_LABELS = ['XX', 'YY']
+CORR_COLORS = ['blue', 'crimson']
+
+# flux model helpers
+def casa_flux_model(lnunu0, iref, *args):
+    exponent = np.sum([arg * (lnunu0 ** power) for power, arg in enumerate(args)], axis=0)
+    return iref * (10 ** lnunu0) ** exponent
+
+def fit_flux_model(nu, s, nu0, sigma, sref, order=5):
+    from scipy.optimize import curve_fit
+    init = [sref, -0.7] + [0] * (order - 1)
+    lnunu0 = np.log10(nu / nu0)
+    for fitorder in range(order, -1, -1):
+        try:
+            popt, _ = curve_fit(casa_flux_model, lnunu0, s,
+                                p0=init[:fitorder + 1], sigma=sigma)
+        except RuntimeError:
+            continue
+        else:
+            coeffs = np.pad(popt, (0, order - fitorder), 'constant')
+            return [nu0] + coeffs.tolist()
+    coeffs = [np.average(s, weights=1. / sigma ** 2)] + [0] * order
+    return [nu0] + coeffs.tolist()
+
+def convert_flux_model(nu=np.linspace(0.9, 2, 200) * 1e9, a=1, b=0, c=0, d=0, Reffreq=1.0e9):
+    MHz = 1e6
+    S = 10 ** (a + b * np.log10(nu / MHz) + c * np.log10(nu / MHz) ** 2
+                + d * np.log10(nu / MHz) ** 3)
+    return fit_flux_model(nu, S, Reffreq, np.ones_like(nu), sref=1, order=3)
+
+# bandpass smoother
+def smooth_bandpass(btab, nchan):
+    """
+    Replace the CPARAM column of a CASA bandpass table with a running mean
+    of width nchan channels.  Flagged channels are excluded from the mean
+    via binary-weight convolution.  Amplitude and unwrapped phase are
+    smoothed independently to avoid wrap artefacts.
+    """
+    tb = casatools.table()
+    tb.open(btab, nomodify=False)
+    cparam = tb.getcol('CPARAM')   # (n_corr, n_chan, n_row)
+    flags  = tb.getcol('FLAG')
+    n_corr, n_chan, n_row = cparam.shape
+    kernel = np.ones(nchan)
+
+    for row in range(n_row):
+        for corr in range(n_corr):
+            sol = cparam[corr, :, row]
+            flg = flags[corr, :, row].astype(bool)
+            wt  = (~flg).astype(float)
+            amp = np.abs(sol)
+            pha = np.unwrap(np.angle(sol))
+
+            wt_sum  = np.convolve(wt,                     kernel, mode='same')
+            amp_sum = np.convolve(np.where(flg, 0., amp), kernel, mode='same')
+            pha_sum = np.convolve(np.where(flg, 0., pha), kernel, mode='same')
+
+            safe_wt = np.where(wt_sum > 0, wt_sum, 1.0)
+            good    = wt_sum > 0
+            amp_s   = np.where(good, amp_sum / safe_wt, amp)
+            pha_s   = np.where(good, pha_sum / safe_wt, pha)
+
+            cparam[corr, :, row] = amp_s * np.exp(1j * pha_s)
+
+    tb.putcol('CPARAM', cparam)
+    tb.close()
+    print(f'[crosscal] {nchan}-channel running mean applied -> {btab}')
+
+# diagnostic plot functions
+def plot_delays(ktab, label, outbase):
+    """Delay (ns) vs antenna, XX and YY overlaid."""
+    tb = casatools.table()
+    tb.open(ktab)
+    fparam = tb.getcol('FPARAM')   # (n_corr, 1, n_row)
+    flags  = tb.getcol('FLAG')
+    ant1   = tb.getcol('ANTENNA1')
+    tb.close()
+
+    fig, ax = plt.subplots(figsize=(10, 4))
+    for corr in range(fparam.shape[0]):
+        good = ~flags[corr, 0, :].astype(bool)
+        ax.plot(ant1[good], fparam[corr, 0, good], 'o', ms=5,
+                color=CORR_COLORS[corr], label=CORR_LABELS[corr], alpha=0.8)
+
+    ax.set_xticks(range(n_ant))
+    ax.set_xticklabels(ant_names, rotation=60, fontsize=9, ha='center')
+    ax.set_xlabel('Antenna')
+    ax.set_ylabel('Delay (ns)')
+    ax.set_title(f'Delay solutions — {label}')
+    ax.legend(prop={'size': 12}, frameon=False)
+    plt.savefig(f'{outbase}.png', dpi=300, bbox_inches='tight')
+    plt.close()
+
+def plot_gains(gtab, label, outbase):
+    """Amplitude and phase vs time, one dot per (antenna, scan), XX/YY coloured."""
+    tb = casatools.table()
+    tb.open(gtab)
+    cparam = tb.getcol('CPARAM')   # (n_corr, 1, n_row)
+    flags  = tb.getcol('FLAG')
+    times  = tb.getcol('TIME')
+    tb.close()
+
+    t_min  = (times - times.min()) / 60.0
+    n_corr = cparam.shape[0]
+
+    fig = plt.figure(figsize=(10, 8))
+    gs  = fig.add_gridspec(2, 1, hspace=0.01)
+    ax1 = fig.add_subplot(gs[0])
+    ax2 = fig.add_subplot(gs[1])
+
+    for corr in range(n_corr):
+        sol  = cparam[corr, 0, :]
+        good = ~flags[corr, 0, :].astype(bool)
+        ax1.plot(t_min[good], np.abs(sol[good]),               '.', ms=3, alpha=0.5,
+                 color=CORR_COLORS[corr], label=CORR_LABELS[corr])
+        ax2.plot(t_min[good], np.degrees(np.angle(sol[good])), '.', ms=3, alpha=0.5,
+                 color=CORR_COLORS[corr], label=CORR_LABELS[corr])
+
+    ax1.set_ylabel('Amplitude')
+    ax1.set_title(f'Gain solutions — {label}')
+    ax1.legend(prop={'size': 12}, frameon=False)
+    ax2.set_ylabel('Phase (deg)')
+    ax2.set_xlabel('Time (min from start)')
+    ax2.legend(prop={'size': 12}, frameon=False)
+    plt.savefig(f'{outbase}.png', dpi=300, bbox_inches='tight')
+    plt.close()
+
+def plot_bandpass(btab, label, outbase):
+    """Amplitude and phase vs channel for all antennas overlaid. One PNG per correlation."""
+    tb = casatools.table()
+    tb.open(btab)
+    cparam = tb.getcol('CPARAM')   # (n_corr, n_chan, n_row)
+    flags  = tb.getcol('FLAG')
+    ant1   = tb.getcol('ANTENNA1')
+    tb.close()
+
+    n_corr, n_chan, n_row = cparam.shape
+    chans = np.arange(n_chan)
+    cmap  = plt.get_cmap('coolwarm', n_ant)
+
+    for corr in range(n_corr):
+        fig = plt.figure(figsize=(10, 8))
+        gs  = fig.add_gridspec(2, 1, hspace=0.01)
+        ax1 = fig.add_subplot(gs[0])
+        ax2 = fig.add_subplot(gs[1])
+
+        for row in range(n_row):
+            sol   = cparam[corr, :, row]
+            good  = ~flags[corr, :, row].astype(bool)
+            aidx  = ant1[row]
+            aname = ant_names[aidx] if aidx < n_ant else f'ant{aidx}'
+            c     = cmap(aidx % n_ant)
+
+            ax1.plot(chans[good], np.abs(sol[good]),               lw=0.5, color=c, label=aname)
+            ax2.plot(chans[good], np.degrees(np.angle(sol[good])), lw=0.5, color=c, label=aname)
+
+        ax1.set_ylabel('Amplitude')
+        ax1.set_title(f'Bandpass solutions — {label} — {CORR_LABELS[corr]}')
+        ax1.legend(prop={'size': 9}, frameon=False, ncol=2,
+                   loc='center left', bbox_to_anchor=(1., 0.))
+        ax2.set_ylabel('Phase (deg)')
+        ax2.set_xlabel('Channel')
+        plt.savefig(f'{outbase}_{CORR_LABELS[corr]}.png', dpi=300, bbox_inches='tight')
+        plt.close()
+
+# flux model and setjy
+if calibrator == 'J0408-6545':
+    # custom model from https://skaafrica.atlassian.net/wiki/spaces/ESDKB/pages/1481408634
+    a, b, c, d = -0.9790, 3.3662, -1.1216, 0.0861
+    freq = np.linspace(1.75, 3.5, 200) * 1e9 if band == 'S' else np.linspace(0.9, 2, 200) * 1e9
+    reffreq, fluxdensity, spix0, spix1, spix2 = convert_flux_model(freq, a, b, c, d)
+    casatasks.setjy(vis=ms, field=calibrator,
+                    spix=[spix0, spix1, spix2, 0],
+                    fluxdensity=fluxdensity,
+                    reffreq=f'{reffreq:.6f}Hz',
+                    standard='manual')
+else:
+    casatasks.setjy(vis=ms, standard='Perley-Butler 2017', usescratch=True)
+
+# main calibration loop
+counters = {'K': 0, 'G': 0, 'B': 0}
+
+# active[type] = path to the most recent table of that type.
+# After each B step K and G are dropped because B subsumes them.
+active = {}
+
+# record of every solved table for the plotting step
+solved_tables = []  # list of (step_type, label, table_path)
+
+for step, cm, si, co in zip(steps, calmode_list, solint_list, combine_list):
+
+    counters[step] += 1
+    label = f'{step}{counters[step]}'
+    table = os.path.join(outdir, f'{outname}_{label}.cal')
+
+    # gaintable: most recent solution of every other type, ordered K → G → B
+    gaintable = [active[t] for t in ('K', 'G', 'B') if t in active and t != step]
+
+    step_name = {'K': 'delay', 'G': 'gain', 'B': 'bandpass'}[step]
+    print(f'{label} : {step_name} calibration')
+    print(f'calmode={cm!r}  solint={si!r}  combine={co!r}')
+    print(f'gaintable={[os.path.basename(g) for g in gaintable]}')
+
+    if step == 'K':
+        casatasks.gaincal(
+            vis       = ms,
+            caltable  = table,
+            gaintype  = 'K',
+            calmode   = cm,
+            solint    = si,
+            combine   = co,
+            refant    = refant,
+            gaintable = gaintable,
+        )
+
+    elif step == 'G':
+        casatasks.gaincal(
+            vis       = ms,
+            caltable  = table,
+            gaintype  = 'G',
+            calmode   = cm,
+            solint    = si,
+            combine   = co,
+            refant    = refant,
+            gaintable = gaintable,
+        )
+
+    elif step == 'B':
+        casatasks.bandpass(
+            vis       = ms,
+            caltable  = table,
+            bandtype  = 'B',
+            solint    = si,
+            combine   = co,
+            refant    = refant,
+            fillgaps  = fillgaps,
+            gaintable = gaintable,
+        )
+        if smooth_window > 1:
+            smooth_bandpass(table, smooth_window)
+
+    else:
+        print(f'=WARNING: unknown step type {step!r}. Skipping.')
+        continue
+
+    # update the active table tracker
+    if step == 'B':
+        active = {'B': table}   # B subsumes all previous K and G
+    else:
+        active[step] = table
+
+    solved_tables.append((step, label, table))
+
+# apply final solutions
+final = {s: t for s, _, t in solved_tables}
+final_tables = [final[t] for t in ('K', 'G', 'B') if t in final]
+print(f'Applying solutions: {[os.path.basename(t) for t in final_tables]}')
+casatasks.applycal(
+    vis       = ms,
+    gaintable = final_tables,
+)
+
+# diagnostic plots
+if plotgains:
+    print(f'Generating diagnostic plots')
+    for step, label, table in solved_tables:
+        outbase     = os.path.join(plotdir, os.path.basename(table).replace('.cal', ''))
+        smooth_label = f'{label} (smoothed)' if (step == 'B' and smooth_window > 1) else label
+        if   step == 'K': plot_delays  (table, label,        outbase)
+        elif step == 'G': plot_gains   (table, label,        outbase)
+        elif step == 'B': plot_bandpass(table, smooth_label, outbase)
+    print(f'Plots written to {plotdir}')
+
+print(f'Done.')

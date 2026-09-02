@@ -1,0 +1,48 @@
+# ── Data products (never committed) ──────────────────────────
+*.ms
+*.ms/
+*.fits
+*.cal
+*.cal/
+*.flagversions/
+*.flagversions
+
+# ── HTCondor runtime logs ─────────────────────────────────────
+condor_logs/
+*.log
+*.out
+*.err
+
+# ── Pipeline runtime output ───────────────────────────────────
+data/
+output/
+plots/
+
+# ── Jupyter notebooks ───────────────────────────────────
+notebook/
+notebooks/
+
+# ── Python cache ──────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+.eggs/
+*.egg-info/
+dist/
+build/
+
+# ── Editor / OS noise ─────────────────────────────────────────
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+Thumbs.db
+
+# ── Singularity images (large binaries) ───────────────────────
+*.sif
+*.simg
+
+# ── User config overrides (keep only the reference template) ──
+pipeline_config.yml
