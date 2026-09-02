@@ -63,25 +63,21 @@ git clone https://github.com/SJVeronese/mktplus-pipeline.git
 cd mktplus-pipeline
 ```
 
-### 2. Create your working directory
-
-The pipeline writes all products (split MSs, calibration tables, images, plots)
-under a single work directory you specify in the config.
-
-```bash
-mkdir -p /path/to/workdir/{data,output,plots,scripts}
-cp scripts/*.py /path/to/workdir/scripts/
-```
-
-### 3. Write your pipeline config
+### 2. Write your pipeline config
 
 Copy the reference configuration and fill in your paths and science parameters:
 
 ```bash
-cp default_config.yml pipeline_config.yml
+cp config_files/default_config.yml config_files/pipeline_config.yml
 ```
 
-The minimum required fields are shown below for each execution mode.
+or, for a minimal full-run configuration:
+
+```bash
+cp config_files/minimal_config.yml config_files/pipeline_config.yml
+```
+
+The mandatory fields are shown below for each execution mode.
 
 #### Bare-metal cluster (no containers)
 
@@ -113,18 +109,21 @@ getdata:
   ms: 'my_observation'
 ```
 
+The pipeline writes all products (split MSs, calibration tables, images, plots)
+under a single work directory you specify in the config.
+
 Enable workers and set their parameters following the comments in `default_config.yml`.
 
-### 4a. Run directly on a bare-metal cluster
+### 3a. Run directly on a bare-metal cluster
 
 ```bash
-bash pipeline.sh /path/to/pipeline_config.yml
+bash pipeline.sh config_files/pipeline_config.yml
 ```
 
 Or submit through your cluster's native scheduler (SLURM, PBS, etc.) as a
 single-node job, passing the config path as the only argument.
 
-### 4b. Submit to HTCondor
+### 3b. Submit to HTCondor
 
 Edit `pipeline.sub` so that the `arguments` line points to your config:
 

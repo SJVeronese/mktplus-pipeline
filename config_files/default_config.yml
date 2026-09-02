@@ -32,12 +32,12 @@ general:
     enable: false
       # Absolute path to the directory containing the Singularity container images
       # Singularity container image filenames, looked up inside contdir
-      contdir: ''
-      containers:
-        # CASA container (used by listobs, mstransform, flagdata, crosscal, wsclean)
-        casa: ''
-        # shadems container (used by the inspect worker)
-        shadems: ''
+    contdir: ''
+    containers:
+      # CASA container (used by listobs, mstransform, flagdata, crosscal, wsclean)
+      casa: ''
+      # shadems container (used by the inspect worker)
+      shadems: ''
       # Optional string prepended to every output filename.
       # When left empty the MS name from getdata (without extension) is used.
   prefix: 'pipeline'

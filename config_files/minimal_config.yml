@@ -1,23 +1,22 @@
-
 general:
   msdir: <path/to/ms/file>            #<--- set
   contdir: <path/to/container/file>   #<--- set
   outdir: <path/to/working/directory> #<--- set
   use_containers:
     enable: false #<--- set to true if working on an HTCondor cluster
-      containers: #<--- ignore if above is false
-        casa:    "<.simg of the casa container>"    #<--- ignore if above is false
-        shadems: "<.simg of the shadems container>" #<--- ignore if above is false
+    containers: #<--- ignore if above is false
+      casa:    "<.simg of the casa container>"    #<--- ignore if above is false
+      shadems: "<.simg of the shadems container>" #<--- ignore if above is false
   prefix: '' #<--- set (optional)
 
 getdata:
   ms: '' #<--- set (without extension)
 
 listobs:
-  enable: true
+  enable: false
 
 mstransform__bpcal:
-  enable: true
+  enable: false
   label_out: 'bpcal'
   field: '0'   #<--- bpcal is typically field 0. Check with listobs output.
   correlation: 'XX,YY'
@@ -26,11 +25,11 @@ mstransform__bpcal:
     chanbin: 4    #<--- increase if you want to limit size of output ms
 
 flagdata__bpcal:
-  enable: true
+  enable: false
   label_in: 'bpcal'
 
 inspect__bpcal:
-  enable: true
+  enable: false
   label_in: 'bpcal'
   dirname: 'before-crosscal'
   col: 'DATA'
@@ -45,7 +44,7 @@ inspect__bpcal:
     - -x FREQ -y phase --corr YY
 
 crosscal:
-  enable: true
+  enable: false
   label_in: 'bpcal'
   label_out: 'crosscal'
   refant: 'm000'
@@ -78,7 +77,7 @@ crosscal:
     plotgains: true
 
 inspect__crosscal:
-  enable: true
+  enable: false
   label_in: 'bpcal'
   dirname: 'after-crosscal'
   col: 'CORRECTED_DATA'
@@ -95,7 +94,7 @@ inspect__crosscal:
     - -x real  -y imag  --corr YY
 
 wsclean__bpcal:
-  enable: true
+  enable: false
   label_in: 'bpcal'
   dirname: 'bpcal'
   npix: 3600
@@ -110,7 +109,7 @@ wsclean__bpcal:
   joinchans: true
 
 mstransform__obs1:
-  enable: true
+  enable: false
   label_out: 'obs1'
   field: '1'
   spw: 0:248~3848
@@ -123,11 +122,11 @@ mstransform__obs1:
     label_cal: 'crosscal'
 
 flagdata__obs1:
-  enable: true
+  enable: false
   label_in: 'obs1'
 
 inspect__obs1:
-  enable: true
+  enable: false
   label_in: 'obs1'
   dirname: 'obs1'
   col: 'CORRECTED_DATA'
@@ -144,7 +143,7 @@ inspect__obs1:
     - -x real  -y imag  --corr YY
 
 wsclean__obs1:
-  enable: true
+  enable: false
   label_in: 'obs1'
   dirname: 'obs1'
   npix: 3600
