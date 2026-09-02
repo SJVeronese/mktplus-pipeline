@@ -813,7 +813,7 @@ fi
 
 # directory that contains pipeline.sh
 # Works whether called by absolute path, relative path, or HTCondor's remote execution
-SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # read general settings
 readonly MS_PATH=$(   get_value "general.msdir")
@@ -825,10 +825,16 @@ readonly CONT_PATH=$(         get_value "general.use_containers.contdir")
 readonly CASA_CONTAINER=$(    get_value "general.use_containers.containers.casa")
 readonly SHADEMS_CONTAINER=$( get_value "general.use_containers.containers.shadems")
 
-
-
 readonly CASA_IMG="${CONT_PATH}/${CASA_CONTAINER}"
 readonly SHADEMS_IMG="${CONT_PATH}/${SHADEMS_CONTAINER}"
+
+# define local paths
+readonly DATA_PATH="${WORK_PATH}/data"
+readonly OUT_PATH="${WORK_PATH}/output"
+readonly PLOT_PATH="${WORK_PATH}/plots"
+readonly SCRIPT_PATH="${SELF_DIR}/scripts"
+readonly IMG_PATH="${OUT_PATH}/continuum"
+readonly CUBE_PATH="${OUT_PATH}/cubes"
 
 if [[ "${USE_CONTAINERS}" == "true" ]]; then
     [[ -z "${CONT_PATH}" ]] && {
@@ -852,14 +858,6 @@ if [[ "${USE_CONTAINERS}" == "true" ]]; then
     readonly SCRIPTDIR="/scripts"
     readonly IMGDIR="/output/continuum"
     readonly CUBEDIR="/output/cubes"
-
-	# define local paths
-    readonly DATA_PATH="${WORK_PATH}/data"
-    readonly OUT_PATH="${WORK_PATH}/output"
-    readonly PLOT_PATH="${WORK_PATH}/plots"
-    readonly SCRIPT_PATH="${WORK_PATH}/scripts"
-    readonly IMG_PATH="${OUT_PATH}/continuum"
-    readonly CUBE_PATH="${OUT_PATH}/cubes"
 	
 	# maps host directories to the fixed container mount points defined early
 	BINDS=(
@@ -873,13 +871,6 @@ if [[ "${USE_CONTAINERS}" == "true" ]]; then
 		--bind "${SCRIPT_PATH}:${SCRIPTDIR}"
 	)
 else
-    # bare-metal: internal paths == host paths
-    readonly DATA_PATH="${WORK_PATH}/data"
-    readonly OUT_PATH="${WORK_PATH}/output"
-    readonly PLOT_PATH="${WORK_PATH}/plots"
-    readonly SCRIPT_PATH="${WORK_PATH}/scripts"
-    readonly IMG_PATH="${OUT_PATH}/continuum"
-    readonly CUBE_PATH="${OUT_PATH}/cubes"
 
     readonly MSDIR="${MS_PATH}"
     readonly DATADIR="${DATA_PATH}"
