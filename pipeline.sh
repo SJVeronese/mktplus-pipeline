@@ -13,7 +13,7 @@
 #                Defaults to 'pipeline.yml' in the CWD.
 #
 #  Workers     : listobs | mstransform | flagdata |
-#                crosscal | wsclean
+#                inspect | crosscal | wsclean
 #
 # ============================================================
 
@@ -818,31 +818,16 @@ SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly MS_PATH=$(   get_value "general.msdir")
 readonly WORK_PATH=$( get_value "general.outdir")
 
-readonly CASA_IMG=$(    get_value "general.containers.casa")
-readonly SHADEMS_IMG=$( get_value "general.containers.shadems")
+# define the containers
+readonly USE_CONTAINERS=$(    get_value "general.use_containers.enable")
+readonly CONT_PATH=$(         get_value "general.use_containers.contdir")
+readonly CASA_CONTAINER=$(    get_value "general.use_containers.containers.casa")
+readonly SHADEMS_CONTAINER=$( get_value "general.use_containers.containers.shadems")
 
 
-readonly MSDIR="/input_ms"
-readonly DATADIR="/data"
-readonly OUTDIR="/output"
-readonly PLOTDIR="/plots"
-readonly SCRIPTDIR="/scripts"
-readonly IMGDIR="/output/continuum"
-readonly CUBEDIR="/output/cubes"
 
-# define local paths
-readonly DATA_PATH="${WORK_PATH}/data"
-readonly OUT_PATH="${WORK_PATH}/output"
-readonly PLOT_PATH="${WORK_PATH}/plots"
-readonly SCRIPT_PATH="${WORK_PATH}/scripts"
-readonly IMG_PATH="${OUT_PATH}/continuum"
-readonly CUBE_PATH="${OUT_PATH}/cubes"
-
-# #define the full path to the containers
-readonly USE_CONTAINERS=$(get_value "general.use_containers.enable")
-readonly CONT_PATH=$( get_value "general.contdir")
-readonly CASA_IMG="${CONT_PATH}/${CASA_IMG}"
-readonly SHADEMS_IMG="${CONT_PATH}/${SHADEMS_IMG}"
+readonly CASA_IMG="${CONT_PATH}/${CASA_CONTAINER}"
+readonly SHADEMS_IMG="${CONT_PATH}/${SHADEMS_CONTAINER}"
 
 if [[ "${USE_CONTAINERS}" == "true" ]]; then
     [[ -z "${CONT_PATH}" ]] && {
@@ -891,7 +876,7 @@ else
     readonly DATA_PATH="${WORK_PATH}/data"
     readonly OUT_PATH="${WORK_PATH}/output"
     readonly PLOT_PATH="${WORK_PATH}/plots"
-    readonly SCRIPT_PATH="${SELF_DIR}"          # scripts live next to pipeline.sh
+    readonly SCRIPT_PATH="${WORK_PATH}/scripts"
     readonly IMG_PATH="${OUT_PATH}/continuum"
     readonly CUBE_PATH="${OUT_PATH}/cubes"
 

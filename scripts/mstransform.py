@@ -1,3 +1,58 @@
+#!/usr/bin/env python3
+"""
+mstransform.py – Measurement set splitting worker for the MeerKAT+ pipeline.
+
+Extracts a single field from an input measurement set into a new MS
+using casatasks.mstransform, with optional selection on spectral window,
+channels, correlations, antennas, and scans, and optional frequency
+and/or time averaging.
+
+An on-the-fly calibration step can also be applied immediately after
+the split (casatasks.applycal) by setting --otfcal true.  In that case
+the script scans a fixed calibration-table directory for the most recent
+K, G, and B tables whose names match the supplied label and applies them
+in order, writing corrected visibilities to the CORRECTED_DATA column of
+the output MS.
+
+Usage
+-----
+    python3 mstransform.py --ms <path> --output <path> [options]
+
+Arguments
+---------
+--ms : str
+    Absolute path to the input measurement set (including .ms extension).
+--datacolumn : str
+    Data column to read from the input MS ('data', 'corrected', 'model').
+--output : str
+    Absolute path for the output measurement set.
+--antenna : str
+    CASA antenna selection string (e.g. 'm000&m001'). Leave empty to
+    select all antennas.
+--correlation : str
+    Correlations to keep (e.g. 'XX,YY'). Leave empty for all.
+--field : str
+    Field ID or name to extract.
+--scan : str
+    Comma-separated scan IDs or ranges. Leave empty for all.
+--spw : str
+    CASA spw selection string. Leave empty for all channels.
+--chanavg : bool
+    Enable channel averaging (default: False).
+--chanbin : int
+    Number of channels to average per output channel (default: 1).
+--timeavg : bool
+    Enable time averaging (default: False).
+--timebin : str
+    Time averaging window with units (e.g. '8s'). Required when
+    --timeavg is True.
+--otfcal : bool
+    Apply on-the-fly calibration after the split (default: False).
+--label_cal : str
+    Calibration label used to locate the correct tables in the
+    caltables directory. Required when --otfcal is True.
+"""
+
 import argparse
 import casatasks
 import casatools
@@ -26,13 +81,39 @@ parser.add_argument("--timebin", default="")
 parser.add_argument("--otfcal", type=lambda v: v.lower() == 'true', default=False)
 parser.add_argument("--label_cal", default="")
 
+
 def find_latest_caltables(caltable_dir, label_cal):
     """
-    For each calibration type K, G, B, find the table under caltable_dir
-    whose name matches <label_cal>_<TYPE><N>.cal with the highest counter N.
-    Returns an ordered list [K_table, G_table, B_table], omitting any type
-    for which no table is found.
+    Locate the most recent K, G, and B calibration tables for a given label.
+
+    Scans caltable_dir for files matching the pattern
+    ``*<label_cal>_<TYPE><N>.cal`` where TYPE is one of K, G, B and N is
+    an integer counter.  For each calibration type the file with the
+    highest counter is selected, mimicking the accumulation logic of the
+    crosscal worker.
+
+    Parameters
+    ----------
+    caltable_dir : str
+        Absolute path to the directory containing the calibration tables.
+    label_cal : str
+        Calibration label used to construct the search pattern
+        (e.g. 'pipeline_1gc1').
+
+    Returns
+    -------
+    list of str
+        Ordered list of absolute paths [K_table, G_table, B_table],
+        containing only the types for which at least one matching file
+        was found.
+
+    Raises
+    ------
+    RuntimeError
+        Raised by the calling code (not this function) if the returned
+        list is empty, i.e. no tables were found for the given label.
     """
+    
     gaintable = []
     for step in ('K', 'G', 'B'):
         pattern = os.path.join(caltable_dir, f'*{label_cal}_{step}*')

@@ -1,3 +1,52 @@
+#!/usr/bin/env python3
+"""
+flagdata.py – Flagging worker for the MeerKAT+ pipeline.
+
+Applies a sequence of flagging operations to a CASA measurement set
+using casatasks.flagdata:
+
+  1. Manual flags  – autocorrelations, user-specified antennas, scans,
+                     spectral windows, and time ranges.
+  2. Shadow flags  – antennas physically blocked by a neighbouring dish.
+  3. Clip flags    – visibilities whose amplitude is exactly zero
+                     (correlator dropouts).
+  4. RFI flags     – automated detection in the time-frequency plane
+                     via the CASA tfcrop algorithm.
+
+A named flag backup ('preliminary') is saved at the end with
+casatasks.flagmanager so the pipeline can verify completion on restart
+without re-running the full flagging sequence.
+
+Usage
+-----
+    python3 flagdata.py --ms <path> [options]
+
+Arguments
+---------
+--ms : str
+    Absolute path to the input measurement set (including .ms extension).
+--antenna : str
+    CASA antenna selection string for manual flagging (e.g. 'm010,m045').
+    Leave empty to skip antenna-based manual flags.
+--autocorr : bool
+    Flag autocorrelations (default: True).
+--clip : bool
+    Flag zero-amplitude visibilities (default: True).
+--rfi : bool
+    Run CASA tfcrop automated RFI detection (default: True).
+--shadow : bool
+    Flag shadowed antennas (default: True).
+--scan : str
+    Comma-separated scan IDs or ranges for manual flagging (e.g. '1,3,5~8').
+    Leave empty to skip.
+--spw : str
+    CASA spw syntax for channel/spw manual flagging (e.g. '0:0~50').
+    Leave empty to skip.
+--time : str
+    CASA timerange syntax for time-range manual flagging.
+    Leave empty to skip.
+"""
+
 import argparse
 import casatasks
 import casatools

@@ -1,3 +1,44 @@
+#!/usr/bin/env python3
+"""
+eval_image_params.py – Automatic imaging parameter estimator for the MeerKAT+ pipeline.
+
+Derives the optimal WSClean cell size and image size from the array
+geometry stored in a measurement set.  The synthesized beam FWHM is
+estimated from the longest baseline and the central (or user-supplied)
+observing frequency; the pixel scale is set to 1/3 of the beam FWHM
+(3 pixels across the beam).  The image size is chosen to cover the
+primary beam and is rounded up to the nearest integer whose only prime
+factors are 2, 3, 5, and 7 (FFT-friendly sizes).
+
+Usage
+-----
+    python3 eval_image_params.py <ms> <freq_ghz>
+
+Arguments
+---------
+ms : str
+    Absolute path to the input measurement set (including .ms extension).
+freq_ghz : float
+    Central observing frequency in GHz used to compute the synthesized
+    beam and primary beam.  Pass 0 to let the script read the mean
+    channel frequency directly from the MS SPECTRAL_WINDOW table.
+
+Output
+------
+Key=value lines written to stdout, one per derived quantity.  The
+pipeline shell script parses these lines to extract Pixel_resolution_asec
+and Image_size_pixel; all other lines are forwarded to the pipeline log.
+
+    Maximum_baseline_km=<float>
+    Max_baseline_pair=<ant_i>-<ant_j>
+    Central_frequency_Hz=<float>
+    Wavelength_m=<float>
+    Synthesized_beam_asec=<float>
+    Primary_beam_asec=<float>
+    Pixel_resolution_asec=<float>
+    Image_size_pixel=<int>
+"""
+
 import casatools
 import numpy as np
 import sys
@@ -69,7 +110,24 @@ theta_pb   = 206265.0 * 1.02 * lam / D_dish   # primary beam FWHM, arcsec
 
 # helper to compute the smallest image size
 def next_good_size(n):
-    """Smallest integer >= n whose only prime factors are 2, 3, 5, 7."""
+    """
+    Return the smallest integer >= n whose only prime factors are 2, 3, 5, and 7.
+
+    WSClean (and CASA imagers) use FFTs internally.  Choosing an image
+    size whose prime factorisation contains only small primes (2, 3, 5, 7)
+    keeps the FFT fast and avoids padding to the next power of two.
+
+    Parameters
+    ----------
+    n : float or int
+        Minimum acceptable image size in pixels.  Fractional values are
+        rounded up before the search begins.
+
+    Returns
+    -------
+    int
+        The smallest 7-smooth integer >= ceil(n).
+    """
     n = int(np.ceil(n))
     while True:
         m = n

@@ -1,16 +1,66 @@
 #!/usr/bin/env python3
 """
-crosscal.py – Generic order-driven cross-calibration for MeerKAT+ (CASA/casatasks).
+crosscal.py – Order-driven 1GC cross-calibration worker for the MeerKAT+ pipeline.
 
-The calibration order is set by --order (e.g. 'KGBKGB').  For each step:
-  - K  → delay calibration    (casatasks.gaincal, gaintype='K')
-  - G  → gain calibration     (casatasks.gaincal, gaintype='G')
-  - B  → bandpass calibration (casatasks.bandpass)
+Solves for instrumental delays (K), complex gains (G), and the bandpass
+response (B) in a user-defined sequence using CASA gaincal and bandpass.
+The calibration order is specified as a string of single-letter step
+codes (e.g. 'KGB' or 'KGBKGB'); each step reuses all solutions derived
+in previous steps as prior corrections.
 
-Gaintable accumulation rule:
-  For each step the gaintable contains the most recent solution of every
-  *other* type, ordered K → G → B.  After each B solution the active set
-  is reset to {B only}, because B subsumes the preceding K and G corrections.
+After a B step the active solution set is reset to {B only}, because the
+bandpass solution subsumes the preceding delay and gain corrections.  This
+means that in a double-pass sequence 'KGBKGB' the second K and G steps
+are solved against the first-pass bandpass, giving cleaner solutions.
+
+Optionally, the bandpass amplitude and phase can be smoothed with a
+running-mean kernel (--smooth-window) to suppress noise in low-S/N
+solutions, and diagnostic PNG plots of all gain tables can be generated
+(--plotgains).
+
+The flux scale is set with casatasks.setjy before any solving: a custom
+polynomial model is used for the standard MeerKAT primary calibrator
+J0408-6545; all other calibrators fall back to the Perley-Butler 2017
+standard.
+
+Usage
+-----
+    python3 crosscal.py --ms <path> [options]
+
+Arguments
+---------
+--ms : str
+    Absolute path to the input measurement set (including .ms extension).
+--outname : str
+    Base name for the output calibration tables (e.g. 'pipeline_1gc1').
+--outdir : str
+    Directory where calibration tables (.cal) will be written.
+--plotdir : str
+    Directory where diagnostic PNG plots will be written.
+--refant : str
+    Reference antenna name or index (e.g. 'm000').
+--band : str
+    Observing band ('L' or 'S'). Used to set the frequency range for the
+    J0408-6545 flux model.
+--calibrator : str
+    Source name of the primary calibrator exactly as printed by listobs.
+--fillgaps : int
+    Number of flagged channels over which to interpolate in the bandpass
+    table.  0 disables gap-filling.
+--smooth-window : int
+    Width of the running-mean kernel (in channels) applied to the bandpass
+    amplitude and phase after solving.  1 disables smoothing.
+--plotgains : bool
+    Generate diagnostic PNG plots for all solved tables (default: False).
+--order : str
+    Calibration sequence as a string of step codes, e.g. 'KGB' or 'KGBKGB'.
+--calmode : str (repeatable)
+    Per-step calmode ('p', 'a', or 'ap').  Pass once per step in order.
+--solint : str (repeatable)
+    Per-step solution interval (e.g. '120s', 'inf').  Pass once per step.
+--combine : str (repeatable)
+    Per-step data axes to combine before solving (e.g. '', 'scan').
+    Pass once per step.
 """
 
 import argparse
@@ -112,10 +162,64 @@ CORR_COLORS = ['blue', 'crimson']
 
 # flux model helpers
 def casa_flux_model(lnunu0, iref, *args):
+    """
+    Evaluate the CASA polynomial flux-density model.
+
+    Computes S(nu) = iref * (nu/nu0)^(sum_k args[k] * log10(nu/nu0)^k),
+    which is the functional form used by CASA setjy for spectral models.
+
+    Parameters
+    ----------
+    lnunu0 : array-like
+        log10(nu / nu0) evaluated at the frequencies of interest.
+    iref : float
+        Flux density at the reference frequency nu0, in Jy.
+    *args : float
+        Polynomial coefficients [alpha, beta, gamma, ...] of the
+        log-log spectral model, starting from the first-order term.
+
+    Returns
+    -------
+    numpy.ndarray
+        Flux density in Jy at each input frequency.
+    """
+    
     exponent = np.sum([arg * (lnunu0 ** power) for power, arg in enumerate(args)], axis=0)
     return iref * (10 ** lnunu0) ** exponent
+    
 
 def fit_flux_model(nu, s, nu0, sigma, sref, order=5):
+    """
+    Fit a CASA polynomial flux-density model to a set of flux measurements.
+
+    Iteratively attempts a least-squares fit of decreasing polynomial order
+    until scipy.optimize.curve_fit converges, then pads the coefficient
+    vector to the requested order.  Falls back to a weighted mean if all
+    fits fail.
+
+    Parameters
+    ----------
+    nu : array-like
+        Observing frequencies in Hz.
+    s : array-like
+        Flux density measurements in Jy at each frequency.
+    nu0 : float
+        Reference frequency in Hz.
+    sigma : array-like
+        Uncertainty on each flux measurement in Jy.
+    sref : float
+        Initial guess for the flux density at nu0 in Jy.
+    order : int, optional
+        Maximum polynomial order of the spectral model (default: 5).
+
+    Returns
+    -------
+    list
+        [nu0, c0, c1, ..., c_order] where nu0 is the reference frequency
+        in Hz and the remaining elements are the fitted polynomial
+        coefficients.
+    """
+    
     from scipy.optimize import curve_fit
     init = [sref, -0.7] + [0] * (order - 1)
     lnunu0 = np.log10(nu / nu0)
@@ -130,21 +234,66 @@ def fit_flux_model(nu, s, nu0, sigma, sref, order=5):
             return [nu0] + coeffs.tolist()
     coeffs = [np.average(s, weights=1. / sigma ** 2)] + [0] * order
     return [nu0] + coeffs.tolist()
+    
 
-def convert_flux_model(nu=np.linspace(0.9, 2, 200) * 1e9, a=1, b=0, c=0, d=0, Reffreq=1.0e9):
+def convert_flux_model(nu, a, b, c, d, Reffreq):
+    """
+    Convert a log-MHz polynomial flux model to the CASA setjy coefficient format.
+
+    Evaluates the flux density S(nu) = 10^(a + b*log10(nu/MHz)
+    + c*log10(nu/MHz)^2 + d*log10(nu/MHz)^3) across the supplied
+    frequency grid and re-fits it as a CASA polynomial model centred
+    on Reffreq using fit_flux_model.
+
+    This is used to translate the published J0408-6545 model coefficients
+    (defined in log-MHz space) into the format expected by casatasks.setjy.
+
+    Parameters
+    ----------
+    nu : array-like
+        Frequency grid in Hz over which to evaluate and re-fit the model.
+    a, b, c, d : float
+        Coefficients of the log-MHz polynomial flux model.
+    Reffreq : float
+        Reference frequency in Hz for the output CASA model.
+
+    Returns
+    -------
+    list
+        [nu0, fluxdensity, spix0, spix1, spix2] ready to be passed
+        directly to casatasks.setjy.
+    """
+    
     MHz = 1e6
     S = 10 ** (a + b * np.log10(nu / MHz) + c * np.log10(nu / MHz) ** 2
                 + d * np.log10(nu / MHz) ** 3)
     return fit_flux_model(nu, S, Reffreq, np.ones_like(nu), sref=1, order=3)
 
+
 # bandpass smoother
 def smooth_bandpass(btab, nchan):
     """
-    Replace the CPARAM column of a CASA bandpass table with a running mean
-    of width nchan channels.  Flagged channels are excluded from the mean
-    via binary-weight convolution.  Amplitude and unwrapped phase are
-    smoothed independently to avoid wrap artefacts.
+    Apply a running-mean smoothing kernel to a CASA bandpass calibration table.
+
+    Replaces the CPARAM column of the table with values smoothed by a
+    boxcar kernel of width nchan channels.  Amplitude and unwrapped phase
+    are smoothed independently to avoid phase-wrap artefacts.  Flagged
+    channels are excluded from the running mean via binary-weight
+    convolution; unflagged channels adjacent to flagged gaps contribute
+    their full weight so that the gap region is filled by extrapolation
+    from neighbours.
+
+    The table is modified in place.
+
+    Parameters
+    ----------
+    btab : str
+        Absolute path to the CASA bandpass calibration table to smooth.
+    nchan : int
+        Width of the boxcar smoothing kernel in channels.  Values <= 1
+        are a no-op (the table is not opened).
     """
+
     tb = casatools.table()
     tb.open(btab, nomodify=False)
     cparam = tb.getcol('CPARAM')   # (n_corr, n_chan, n_row)
@@ -175,9 +324,27 @@ def smooth_bandpass(btab, nchan):
     tb.close()
     print(f'[crosscal] {nchan}-channel running mean applied -> {btab}')
 
+
 # diagnostic plot functions
 def plot_delays(ktab, label, outbase):
-    """Delay (ns) vs antenna, XX and YY overlaid."""
+    """
+    Plot delay solutions (ns) versus antenna for XX and YY correlations.
+
+    Reads the FPARAM column of a CASA delay (K) calibration table and
+    produces a single scatter plot with both correlations overlaid,
+    coloured blue (XX) and crimson (YY).  Flagged solutions are excluded.
+
+    Parameters
+    ----------
+    ktab : str
+        Absolute path to the CASA delay calibration table.
+    label : str
+        Human-readable label used in the plot title (e.g. 'K1').
+    outbase : str
+        Output file path without extension.  The plot is saved as
+        ``<outbase>.png`` at 300 dpi.
+    """
+    
     tb = casatools.table()
     tb.open(ktab)
     fparam = tb.getcol('FPARAM')   # (n_corr, 1, n_row)
@@ -199,9 +366,29 @@ def plot_delays(ktab, label, outbase):
     ax.legend(prop={'size': 12}, frameon=False)
     plt.savefig(f'{outbase}.png', dpi=300, bbox_inches='tight')
     plt.close()
+    
 
 def plot_gains(gtab, label, outbase):
-    """Amplitude and phase vs time, one dot per (antenna, scan), XX/YY coloured."""
+    """
+    Plot gain solutions (amplitude and phase) versus time for XX and YY.
+
+    Reads the CPARAM column of a CASA gain (G) calibration table and
+    produces a two-panel figure (amplitude on top, phase in degrees below)
+    with time on the x-axis in minutes from the start of the observation.
+    Both correlations are overlaid using colour coding (blue XX, crimson YY).
+    Flagged solutions are excluded.
+
+    Parameters
+    ----------
+    gtab : str
+        Absolute path to the CASA gain calibration table.
+    label : str
+        Human-readable label used in the plot title (e.g. 'G1').
+    outbase : str
+        Output file path without extension.  The plot is saved as
+        ``<outbase>.png`` at 300 dpi.
+    """
+    
     tb = casatools.table()
     tb.open(gtab)
     cparam = tb.getcol('CPARAM')   # (n_corr, 1, n_row)
@@ -234,8 +421,29 @@ def plot_gains(gtab, label, outbase):
     plt.savefig(f'{outbase}.png', dpi=300, bbox_inches='tight')
     plt.close()
 
+
 def plot_bandpass(btab, label, outbase):
-    """Amplitude and phase vs channel for all antennas overlaid. One PNG per correlation."""
+    """
+    Plot bandpass solutions (amplitude and phase) versus channel for all antennas.
+
+    Reads the CPARAM column of a CASA bandpass (B) calibration table and
+    produces a two-panel figure (amplitude on top, phase in degrees below)
+    for each correlation separately.  Each antenna is drawn as a separate
+    line, coloured by antenna index from the 'coolwarm' colourmap.
+    Flagged channels are excluded per antenna per row.
+
+    Parameters
+    ----------
+    btab : str
+        Absolute path to the CASA bandpass calibration table.
+    label : str
+        Human-readable label used in the plot title (e.g. 'B1 (smoothed)').
+    outbase : str
+        Output file path without extension.  One PNG is produced per
+        correlation and saved as ``<outbase>_XX.png`` and
+        ``<outbase>_YY.png`` at 300 dpi.
+    """
+    
     tb = casatools.table()
     tb.open(btab)
     cparam = tb.getcol('CPARAM')   # (n_corr, n_chan, n_row)
