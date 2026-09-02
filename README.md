@@ -13,7 +13,7 @@ driven entirely by a single YAML configuration file.
 ├── pipeline.sub         # HTCondor submission file
 ├── config_files/
 	├── default_config.yml # Fully-documented reference configuration
-	└── minimal_config.py  # Minimal config file for a data reduction and imaging run
+	└── minimal_config.yml  # Minimal config file for a data reduction and imaging run
 ├── scripts/
 │   ├── crosscal.py      # 1GC cross-calibration worker
 │   ├── eval_image_params.py  # Automatic cell/image-size estimator
@@ -34,8 +34,8 @@ driven entirely by a single YAML configuration file.
 |-----------|---------|
 | Python ≥ 3.8 | Worker script runtime |
 | casatasks / casatools | CASA Python bindings |
-| WSClean | Continuum imaging (must be on `$PATH`) |
-| shadems | Diagnostic visibility plots (must be on `$PATH`) |
+| WSClean | Continuum imaging |
+| shadems | Diagnostic visibility plots |
 | numpy, scipy, matplotlib | Used by `crosscal.py` and `eval_image_params.py` |
 
 No HTCondor or Singularity installation is required in this mode.
@@ -169,7 +169,7 @@ independently with different parameters.
 
 ## Configuration reference
 
-See [`default_config.yml`](default_config.yml) for a fully-documented
+See [`default_config.yml`](config_files/default_config.yml) for a fully-documented
 description of every available parameter.
 
 ---
@@ -192,4 +192,3 @@ Lines from CASA that contain `SEVERE`, `ERROR`, or `Traceback` are promoted to
 ## License
 
 MIT — see `LICENSE`.
-```
