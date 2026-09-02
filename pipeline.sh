@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+
 # ============================================================
 #  MeerKAT+ Data Reduction Pipeline   –   pipeline.sh
 #  Version     : 0.1.0
