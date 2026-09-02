@@ -1,0 +1,159 @@
+
+general:
+  msdir: <path/to/ms/file>            #<--- set
+  contdir: <path/to/container/file>   #<--- set
+  outdir: <path/to/working/directory> #<--- set
+  use_containers:
+    enable: false #<--- set to true if working on an HTCondor cluster
+      containers: #<--- ignore if above is false
+        casa:    "<.simg of the casa container>"    #<--- ignore if above is false
+        shadems: "<.simg of the shadems container>" #<--- ignore if above is false
+  prefix: '' #<--- set (optional)
+
+getdata:
+  ms: '' #<--- set (without extension)
+
+listobs:
+  enable: true
+
+mstransform__bpcal:
+  enable: true
+  label_out: 'bpcal'
+  field: '0'   #<--- bpcal is typically field 0. Check with listobs output.
+  correlation: 'XX,YY'
+  chanavg:
+    enable: true
+    chanbin: 4    #<--- increase if you want to limit size of output ms
+
+flagdata__bpcal:
+  enable: true
+  label_in: 'bpcal'
+
+inspect__bpcal:
+  enable: true
+  label_in: 'bpcal'
+  dirname: 'before-crosscal'
+  col: 'DATA'
+  plots:
+    - -x TIME -y amp --corr XX
+    - -x TIME -y amp --corr YY
+    - -x TIME -y phase --corr XX
+    - -x TIME -y phase --corr YY
+    - -x FREQ -y amp --corr XX
+    - -x FREQ -y amp --corr YY
+    - -x FREQ -y phase --corr XX
+    - -x FREQ -y phase --corr YY
+
+crosscal:
+  enable: true
+  label_in: 'bpcal'
+  label_out: 'crosscal'
+  refant: 'm000'
+  band: 'S'   #<--- change to 'L' if L-band obs
+  primary:
+    order: 'KGBKGB'
+    calmode:
+      - ''
+      - 'ap'
+      - 'ap'
+      - ''
+      - 'ap'
+      - 'ap'
+    solint:
+      - 'inf'
+      - 'inf'
+      - 'inf'
+      - 'inf'
+      - 'inf'
+      - 'inf'
+    combine:
+      - 'scan'
+      - ''
+      - 'scan'
+      - 'scan'
+      - ''
+      - 'scan'
+    fillgaps: 600
+    smooth_window: 9
+    plotgains: true
+
+inspect__crosscal:
+  enable: true
+  label_in: 'bpcal'
+  dirname: 'after-crosscal'
+  col: 'CORRECTED_DATA'
+  plots:
+    - -x TIME -y amp --corr XX
+    - -x TIME -y amp --corr YY
+    - -x TIME -y phase --corr XX
+    - -x TIME -y phase --corr YY
+    - -x FREQ -y amp --corr XX
+    - -x FREQ -y amp --corr YY
+    - -x FREQ -y phase --corr XX
+    - -x FREQ -y phase --corr YY
+    - -x real  -y imag  --corr XX
+    - -x real  -y imag  --corr YY
+
+wsclean__bpcal:
+  enable: true
+  label_in: 'bpcal'
+  dirname: 'bpcal'
+  npix: 3600
+  cell: 1.0
+  weight: 'briggs'
+  robust: 0.
+  auto_mask: 5
+  auto_thr: 0.5
+  niter: 1000000
+  nmiter: 0
+  nchans: 3
+  joinchans: true
+
+mstransform__obs1:
+  enable: true
+  label_out: 'obs1'
+  field: '1'
+  spw: 0:248~3848
+  correlation: 'XX,YY'
+  chanavg:
+    enable: true
+    chanbin: 4
+  otfcal:
+    enable: true
+    label_cal: 'crosscal'
+
+flagdata__obs1:
+  enable: true
+  label_in: 'obs1'
+
+inspect__obs1:
+  enable: true
+  label_in: 'obs1'
+  dirname: 'obs1'
+  col: 'CORRECTED_DATA'
+  plots:
+    - -x TIME -y amp --corr XX
+    - -x TIME -y amp --corr YY
+    - -x TIME -y phase --corr XX
+    - -x TIME -y phase --corr YY
+    - -x FREQ -y amp --corr XX
+    - -x FREQ -y amp --corr YY
+    - -x FREQ -y phase --corr XX
+    - -x FREQ -y phase --corr YY
+    - -x real  -y imag  --corr XX
+    - -x real  -y imag  --corr YY
+
+wsclean__obs1:
+  enable: true
+  label_in: 'obs1'
+  dirname: 'obs1'
+  npix: 3600
+  cell: 1.0
+  weight: 'briggs'
+  robust: 0.
+  auto_mask: 5
+  auto_thr: 0.5
+  niter: 1000000
+  nmiter: 0
+  nchans: 3
+  joinchans: true

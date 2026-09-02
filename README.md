@@ -59,8 +59,8 @@ are satisfied inside the CASA Singularity image. No local Python environment is 
 ### 1. Clone the repository
 
 ```bash
-git clone https://github.com/<your-username>/<your-repo>.git
-cd <your-repo>
+git clone https://github.com/SJVeronese/mktplus-pipeline.git
+cd mktplus-pipeline
 ```
 
 ### 2. Create your working directory
